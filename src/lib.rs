@@ -1,9 +1,11 @@
-#![allow(dead_code, unused)]
+// #![allow(dead_code, unused)]
 #![forbid(unused_must_use)]
 
-use std::ops::Add;
+pub use chumsky;
+pub use num_traits;
 
 use chumsky::prelude::*;
+use std::ops::*;
 
 #[derive(PartialEq, Debug)]
 pub enum Expression<'src> {
@@ -38,8 +40,6 @@ impl<'src> Add for Expression<'src> {
         Self::Add(self.boxed(), rhs.boxed())
     }
 }
-
-use std::ops::*;
 
 impl<'src> Sub for Expression<'src> {
     type Output = Expression<'src>;
@@ -175,27 +175,36 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expression<'src>, ParserEr
 
 use std::collections::HashMap;
 
-pub fn eval(
-    expression: &Expression,
+#[derive(Debug)]
+pub enum EvalError<'src> {
+    UndefinedVariable(&'src str),
+    UndefinedFunction,
+}
+
+pub fn eval<'src>(
+    expression: &Expression<'src>,
     variables: &HashMap<&str, f64>,
     functions: &HashMap<&str, fn(Vec<f64>) -> f64>,
-) -> f64 {
+) -> Result<f64, EvalError<'src>> {
     use Expression::*;
-    match expression {
+    Ok(match expression {
         Number(n) => *n,
-        Identifier(id) => *variables.get(id).unwrap(),
-        Negate(a) => -eval(a, variables, functions),
-        Add(a, b) => eval(a, variables, functions) + eval(b, variables, functions),
-        Substract(a, b) => eval(a, variables, functions) - eval(b, variables, functions),
-        Multiply(a, b) => eval(a, variables, functions) * eval(b, variables, functions),
-        Divide(a, b) => eval(a, variables, functions) / eval(b, variables, functions),
-        Power(a, b) => eval(a, variables, functions).powf(eval(b, variables, functions)),
+        Identifier(id) => variables
+            .get(id)
+            .map(|&n| n)
+            .ok_or(EvalError::UndefinedVariable(id))?,
+        Negate(a) => eval(a, variables, functions).map(|x| -x)?,
+        Add(a, b) => eval(a, variables, functions)? + eval(b, variables, functions)?,
+        Substract(a, b) => eval(a, variables, functions)? - eval(b, variables, functions)?,
+        Multiply(a, b) => eval(a, variables, functions)? * eval(b, variables, functions)?,
+        Divide(a, b) => eval(a, variables, functions)? / eval(b, variables, functions)?,
+        Power(a, b) => eval(a, variables, functions)?.powf(eval(b, variables, functions)?),
         Call((name, args)) => functions[name](
             args.iter()
                 .map(|arg| eval(arg, variables, functions))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         ),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -259,7 +268,8 @@ mod tests {
                 &parser.parse_with_state("1+2", &mut state).unwrap(),
                 &Default::default(),
                 &Default::default(),
-            ),
+            )
+            .unwrap(),
             3.0
         );
         assert_eq!(
@@ -267,7 +277,8 @@ mod tests {
                 &parser.parse_with_state("(1+x)*3/4", &mut state).unwrap(),
                 &HashMap::from([("x", 2.0)]),
                 &Default::default(),
-            ),
+            )
+            .unwrap(),
             2.25
         );
         // sin(x) + cos(y)
@@ -283,7 +294,8 @@ mod tests {
                     .unwrap(),
                 &HashMap::from([("x", x), ("y", y)]),
                 &HashMap::from([("sin", sin as F), ("cos", cos as F)]),
-            ),
+            )
+            .unwrap(),
             x.sin() + y.cos()
         );
     }
