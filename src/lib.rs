@@ -6,7 +6,7 @@ use std::ops::Add;
 use chumsky::prelude::*;
 
 #[derive(PartialEq, Debug)]
-enum Expression<'src> {
+pub enum Expression<'src> {
     // Atom
     Number(f64),
     Identifier(&'src str),
@@ -86,7 +86,7 @@ impl<'src> Pow<Self> for Expression<'src> {
 type BinaryOperator<'src> = fn(Box<Expression<'src>>, Box<Expression<'src>>) -> Expression<'src>;
 
 #[derive(Default)]
-struct State {}
+pub struct State {}
 
 type ParserError<'src> = extra::Full<Simple<'src, char>, State, ()>;
 
@@ -126,7 +126,7 @@ fn number_parser<'src>() -> impl Parser<'src, &'src str, Expression<'src>, Parse
         .map(Expression::Number)
 }
 
-fn parser<'src>() -> impl Parser<'src, &'src str, Expression<'src>, ParserError<'src>> {
+pub fn parser<'src>() -> impl Parser<'src, &'src str, Expression<'src>, ParserError<'src>> {
     use Expression::*;
     let number = number_parser();
     let identifier = text::ident().map(Expression::Identifier).padded();
@@ -175,7 +175,7 @@ fn parser<'src>() -> impl Parser<'src, &'src str, Expression<'src>, ParserError<
 
 use std::collections::HashMap;
 
-fn eval(
+pub fn eval(
     expression: &Expression,
     variables: &HashMap<&str, f64>,
     functions: &HashMap<&str, fn(Vec<f64>) -> f64>,
