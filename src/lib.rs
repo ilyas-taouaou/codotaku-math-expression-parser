@@ -191,7 +191,7 @@ pub fn eval<'src>(
         Number(n) => *n,
         Identifier(id) => variables
             .get(id)
-            .map(|&n| n)
+            .copied()
             .ok_or(EvalError::UndefinedVariable(id))?,
         Negate(a) => eval(a, variables, functions).map(|x| -x)?,
         Add(a, b) => eval(a, variables, functions)? + eval(b, variables, functions)?,
