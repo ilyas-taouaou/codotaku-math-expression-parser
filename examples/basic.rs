@@ -4,7 +4,7 @@ use codotaku_math_expression_parser::{chumsky::Parser, eval, parser, State};
 
 type F = fn(Vec<f64>) -> f64;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create parser
     let parser = parser();
 
@@ -26,9 +26,11 @@ fn main() {
     let functions = HashMap::from([("sin", sin as F), ("cos", cos as F)]);
 
     // Evaluate expression
-    let result = eval(&ast, &variables, &functions).unwrap();
+    let result = eval(&ast, &variables, &functions)?;
 
     // Test result
     assert_eq!(result, (2.0 * x).sin().powf(2.0) + (3.0 * y).cos().powf(PI));
     dbg!(result);
+
+    Ok(())
 }

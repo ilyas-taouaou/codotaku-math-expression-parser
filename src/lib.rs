@@ -7,6 +7,14 @@ pub use num_traits;
 use chumsky::prelude::*;
 use std::ops::*;
 
+use num_traits::Pow;
+type BinaryOperator<'src> = fn(Box<Expression<'src>>, Box<Expression<'src>>) -> Expression<'src>;
+
+#[derive(Default)]
+pub struct State {}
+
+type ParserError<'src> = extra::Full<Simple<'src, char>, State, ()>;
+
 #[derive(PartialEq, Debug)]
 pub enum Expression<'src> {
     // Atom
@@ -73,8 +81,6 @@ impl<'src> Neg for Expression<'src> {
     }
 }
 
-use num_traits::Pow;
-
 impl<'src> Pow<Self> for Expression<'src> {
     type Output = Expression<'src>;
 
@@ -82,13 +88,6 @@ impl<'src> Pow<Self> for Expression<'src> {
         Self::Power(self.boxed(), rhs.boxed())
     }
 }
-
-type BinaryOperator<'src> = fn(Box<Expression<'src>>, Box<Expression<'src>>) -> Expression<'src>;
-
-#[derive(Default)]
-pub struct State {}
-
-type ParserError<'src> = extra::Full<Simple<'src, char>, State, ()>;
 
 fn binary_parser2<'src>(
     previous_parser: impl Parser<'src, &'src str, Expression<'src>, ParserError<'src>> + Clone,
@@ -175,10 +174,14 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expression<'src>, ParserEr
 
 use std::collections::HashMap;
 
-#[derive(Debug)]
+use thiserror::Error;
+
+#[derive(Debug, PartialEq, Error)]
 pub enum EvalError<'src> {
+    #[error("undefined variable `{0}`")]
     UndefinedVariable(&'src str),
-    UndefinedFunction,
+    #[error("undefined function `{0}`")]
+    UndefinedFunction(&'src str),
 }
 
 pub fn eval<'src>(
@@ -199,11 +202,15 @@ pub fn eval<'src>(
         Multiply(a, b) => eval(a, variables, functions)? * eval(b, variables, functions)?,
         Divide(a, b) => eval(a, variables, functions)? / eval(b, variables, functions)?,
         Power(a, b) => eval(a, variables, functions)?.powf(eval(b, variables, functions)?),
-        Call((name, args)) => functions[name](
-            args.iter()
-                .map(|arg| eval(arg, variables, functions))
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
+        Call((name, args)) => functions
+            .get(name)
+            .map(|f| {
+                args.iter()
+                    .map(|arg| eval(arg, variables, functions))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|args| f(args))
+            })
+            .ok_or(EvalError::UndefinedFunction(name))??,
     })
 }
 
@@ -219,40 +226,50 @@ mod tests {
         let mut state = State::default();
 
         assert_eq!(
-            parser.parse_with_state("-123.0456", &mut state).unwrap(),
-            -Number(123.0456)
+            parser
+                .parse_with_state("-123.0456", &mut state)
+                .into_result(),
+            Ok(-Number(123.0456))
         );
         assert_eq!(
-            parser.parse_with_state("+123.0456", &mut state).unwrap(),
-            Number(123.0456).into()
+            parser
+                .parse_with_state("+123.0456", &mut state)
+                .into_result(),
+            Ok(Number(123.0456).into())
         );
         assert_eq!(
-            parser.parse_with_state("--123.0456", &mut state).unwrap(),
-            --Number(123.0456)
+            parser
+                .parse_with_state("--123.0456", &mut state)
+                .into_result(),
+            Ok(--Number(123.0456))
         );
         assert_eq!(
-            parser.parse_with_state("hello", &mut state).unwrap(),
-            Identifier("hello")
+            parser.parse_with_state("hello", &mut state).into_result(),
+            Ok(Identifier("hello"))
         );
         assert_eq!(
-            parser.parse_with_state("1+2*3/4", &mut state).unwrap(),
-            Number(1.0) + Number(2.0) * Number(3.0) / Number(4.0)
+            parser.parse_with_state("1+2*3/4", &mut state).into_result(),
+            Ok(Number(1.0) + Number(2.0) * Number(3.0) / Number(4.0))
         );
         assert_eq!(
-            parser.parse_with_state("(1+2)*3/4", &mut state).unwrap(),
-            (Number(1.0) + Number(2.0)) * Number(3.0) / Number(4.0)
+            parser
+                .parse_with_state("(1+2)*3/4", &mut state)
+                .into_result(),
+            Ok((Number(1.0) + Number(2.0)) * Number(3.0) / Number(4.0))
         );
         assert_eq!(
-            parser.parse_with_state("2(3x+4y^3)", &mut state).unwrap(),
-            Number(2.0)
+            parser
+                .parse_with_state("2(3x+4y^3)", &mut state)
+                .into_result(),
+            Ok(Number(2.0)
                 * (Number(3.0) * Identifier("x")
-                    + (Number(4.0) * Identifier("y")).pow(Number(3.0)))
+                    + (Number(4.0) * Identifier("y")).pow(Number(3.0))))
         );
         assert_eq!(
             parser
                 .parse_with_state("2(3x+4y^3)+f(2x+pi,y^3,)", &mut state)
-                .unwrap(),
-            Number(2.0)
+                .into_result(),
+            Ok(Number(2.0)
                 * (Number(3.0) * Identifier("x")
                     + (Number(4.0) * Identifier("y")).pow(Number(3.0)))
                 + Call((
@@ -261,25 +278,23 @@ mod tests {
                         Number(2.0) * Identifier("x") + Identifier("pi"),
                         Identifier("y").pow(Number(3.0)),
                     ]
-                ))
+                )))
         );
         assert_eq!(
             eval(
                 &parser.parse_with_state("1+2", &mut state).unwrap(),
                 &Default::default(),
                 &Default::default(),
-            )
-            .unwrap(),
-            3.0
+            ),
+            Ok(3.0)
         );
         assert_eq!(
             eval(
                 &parser.parse_with_state("(1+x)*3/4", &mut state).unwrap(),
                 &HashMap::from([("x", 2.0)]),
                 &Default::default(),
-            )
-            .unwrap(),
-            2.25
+            ),
+            Ok(2.25)
         );
         // sin(x) + cos(y)
         let sin = |args: Vec<f64>| args[0].sin();
@@ -294,9 +309,8 @@ mod tests {
                     .unwrap(),
                 &HashMap::from([("x", x), ("y", y)]),
                 &HashMap::from([("sin", sin as F), ("cos", cos as F)]),
-            )
-            .unwrap(),
-            x.sin() + y.cos()
+            ),
+            Ok(x.sin() + y.cos())
         );
     }
 }
