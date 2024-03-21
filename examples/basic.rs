@@ -8,9 +8,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create parser
     let parser = parser();
 
+    let mut state = State::default();
+
     // Parse expression
     let ast = parser
-        .parse_with_state("sin(2x)^2 + cos(3y)^pi", &mut State::default())
+        .parse_with_state("sin(2x)^2 + cos(3y)^pi", &mut state)
         .unwrap();
 
     dbg!(&ast);
@@ -26,11 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let functions = HashMap::from([("sin", sin as F), ("cos", cos as F)]);
 
     // Evaluate expression
-    let result = eval(&ast, &variables, &functions)?;
+    let result = eval(&ast, &variables, &functions, &mut state)?;
 
     // Test result
     assert_eq!(result, (2.0 * x).sin().powf(2.0) + (3.0 * y).cos().powf(PI));
     dbg!(result);
+
+    println!("{}", state.expressions.len());
 
     Ok(())
 }
