@@ -5,14 +5,15 @@ pub use chumsky;
 pub use num_traits;
 
 use chumsky::prelude::*;
-use std::ops::*;
+use std::{borrow::Cow, ops::*};
 
 use num_traits::Pow;
 type BinaryOperator<'src> = fn(usize, usize) -> Expression<'src>;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct State<'src> {
     pub expressions: Vec<Expression<'src>>,
+    pub cleanup: Vec<usize>,
 }
 
 type ParserError<'src> = extra::Full<Simple<'src, char>, State<'src>, ()>;
@@ -246,6 +247,173 @@ pub fn eval<'src>(
             })
             .ok_or(EvalError::UndefinedFunction(name))??,
     })
+}
+
+// NOTE: some optimizations here may produce incorrect results if the expression contains side effects
+// and if the one of the floating point numbers is NaN or Infinity
+pub fn constant_fold<'src>(
+    expression: usize,
+    variables: &HashMap<&str, f64>,
+    state: &mut State<'src>,
+) {
+    use Expression::*;
+    match state.expressions[expression] {
+        Number(_) => {}
+        Identifier(name) => {
+            if let Some(value) = variables.get(name) {
+                state.expressions[expression] = Number(*value);
+            }
+        }
+        Negate(a) => {
+            constant_fold(a, variables, state);
+            if let Number(value) = state.expressions[a] {
+                state.cleanup.push(a);
+                state.expressions[expression] = Number(-value);
+            }
+        }
+        Add(a, b) => {
+            constant_fold(a, variables, state);
+            constant_fold(b, variables, state);
+
+            match (&state.expressions[a], &state.expressions[b]) {
+                (Number(lhs), Number(rhs)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = Number(lhs + rhs);
+                }
+                (expr, Number(0.0)) | (Number(0.0), expr) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = expr.clone();
+                }
+                _ => {}
+            }
+        }
+        Multiply(a, b) => {
+            constant_fold(a, variables, state);
+            constant_fold(b, variables, state);
+
+            match (&state.expressions[a], &state.expressions[b]) {
+                (Number(lhs), Number(rhs)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = Number(lhs * rhs);
+                }
+                (expr, Number(1.0)) | (Number(1.0), expr) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = expr.clone();
+                }
+                _ => {}
+            }
+        }
+        Substract(a, b) => {
+            constant_fold(a, variables, state);
+            constant_fold(b, variables, state);
+
+            match (&state.expressions[a], &state.expressions[b]) {
+                (Number(lhs), Number(rhs)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = Number(lhs - rhs);
+                }
+                (expr, Number(0.0)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = expr.clone();
+                }
+                _ => {}
+            }
+        }
+        Divide(a, b) => {
+            constant_fold(a, variables, state);
+            constant_fold(b, variables, state);
+
+            match (&state.expressions[a], &state.expressions[b]) {
+                (Number(lhs), Number(rhs)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = Number(lhs / rhs);
+                }
+                (expr, Number(1.0)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = expr.clone();
+                }
+                _ => {}
+            }
+        }
+        Power(a, b) => {
+            constant_fold(a, variables, state);
+            constant_fold(b, variables, state);
+
+            match (&state.expressions[a], &state.expressions[b]) {
+                (Number(lhs), Number(rhs)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = Number(lhs.powf(*rhs));
+                }
+                (_, Number(1.0)) => {
+                    state.cleanup.push(b);
+                    state.expressions[expression] = state.expressions[a].clone();
+                }
+                (_, Number(0.0)) => {
+                    state.cleanup.push(a);
+                    state.cleanup.push(b);
+                    state.expressions[expression] = Number(1.0);
+                }
+                _ => {}
+            }
+        }
+        // Borrow checker problems implementing this
+        Call((name, ref args)) => {}
+    }
+}
+
+impl<'src> State<'src> {
+    fn cleanup(&mut self) {}
+
+    pub fn format(&self, expression: &Expression<'src>) -> Cow<'src, str> {
+        use Cow::*;
+        match expression {
+            Expression::Number(value) => Owned(value.to_string()),
+            Expression::Identifier(name) => Borrowed(name),
+            Expression::Negate(a) => Owned(format!("-{}", self.format(&self.expressions[*a]))),
+            Expression::Add(a, b) => Owned(format!(
+                "{} + {}",
+                self.format(&self.expressions[*a]),
+                self.format(&self.expressions[*b])
+            )),
+            Expression::Substract(a, b) => Owned(format!(
+                "{} - {}",
+                self.format(&self.expressions[*a]),
+                self.format(&self.expressions[*b])
+            )),
+            Expression::Multiply(a, b) => Owned(format!(
+                "{} * {}",
+                self.format(&self.expressions[*a]),
+                self.format(&self.expressions[*b])
+            )),
+            Expression::Divide(a, b) => Owned(format!(
+                "{} / {}",
+                self.format(&self.expressions[*a]),
+                self.format(&self.expressions[*b])
+            )),
+            Expression::Power(a, b) => Owned(format!(
+                "{} ^ {}",
+                self.format(&self.expressions[*a]),
+                self.format(&self.expressions[*b])
+            )),
+            Expression::Call((name, arguments)) => Owned(format!(
+                "{}{:?}",
+                name,
+                arguments
+                    .into_iter()
+                    .map(|argument| self.format(argument))
+                    .collect::<Vec<_>>()
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
